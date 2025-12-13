@@ -1,3 +1,10 @@
+<<<<<<< Updated upstream
+=======
+using System;
+using System.Collections;
+using System.Runtime.InteropServices;
+using Unity.Mathematics;
+>>>>>>> Stashed changes
 using UnityEngine;
 using Unity.Mathematics;
 using System.Runtime.InteropServices;
@@ -142,7 +149,7 @@ public class SimulationSpatialHashingManager : MonoBehaviour
     {
         if (!isPaused)
         {
-            float timeStep = frameTime / iterationsPerFrame * timeScale;
+            float timeStep = timeScale;
 
             UpdateSettings(timeStep);
 
@@ -155,7 +162,52 @@ public class SimulationSpatialHashingManager : MonoBehaviour
 
     void RunSimulationStep()
     {
+<<<<<<< Updated upstream
         Dispatch(compute, particleCount, kernelIndex: externalForcesKernel);
+=======
+        CommandBuffer cmd = new CommandBuffer();
+        cmd.name = "HashSimulation";
+        cmd.BeginSample("External Forces");
+        cmd.DispatchCompute(compute, externalForcesKernel, Mathf.CeilToInt(particleCount / 64.0f), 1, 1);
+        cmd.EndSample("External Forces");
+        cmd.BeginSample("Predict Positions");
+        cmd.DispatchCompute(compute, predictPositionsKernel, Mathf.CeilToInt(particleCount / 64.0f), 1, 1);
+        cmd.EndSample("Predict Positions");
+        cmd.BeginSample("Sort Particles By Hash");
+        for (int sortingGroupSize = 2; sortingGroupSize <= particleCount; sortingGroupSize *= 2)
+        {
+            for (int sortingDistance = sortingGroupSize / 2; sortingDistance > 0; sortingDistance /= 2)
+            {
+                cmd.SetComputeIntParam( compute, "sortingGroupSize", sortingGroupSize);
+                cmd.SetComputeIntParam( compute, "sortingDistance", sortingDistance);
+                cmd.DispatchCompute(compute, sortParticlesByHashKernel, Mathf.CeilToInt(particleCount / 64.0f), 1, 1);
+                //compute.SetInt("sortingGroupSize", sortingGroupSize);
+                //compute.SetInt("sortingDistance", sortingDistance);
+                //Dispatch(compute, particleCount, kernelIndex: sortParticlesByHashKernel);
+            }
+        }
+        cmd.EndSample("Sort Particles By Hash");
+        cmd.BeginSample("Build Hash Offset Table");
+        cmd.DispatchCompute(compute, buildHashOffsetTableKernel, Mathf.CeilToInt(hashTableSize / 64.0f), 1, 1);
+        cmd.EndSample("Build Hash Offset Table");
+        cmd.BeginSample("Density");
+        cmd.DispatchCompute(compute, densityKernel, Mathf.CeilToInt(particleCount / 64.0f), 1, 1);
+        cmd.EndSample("Density");
+        cmd.BeginSample("Pressure");
+        cmd.DispatchCompute(compute, pressureKernel, Mathf.CeilToInt(particleCount / 64.0f), 1, 1);
+        cmd.EndSample("Pressure");
+        cmd.BeginSample("Viscosity");
+        cmd.DispatchCompute(compute, viscosityKernel, Mathf.CeilToInt(particleCount / 64.0f), 1, 1);
+        cmd.EndSample("Viscosity");
+        cmd.BeginSample("Update Positions");
+        cmd.DispatchCompute(compute, updatePositionKernel, Mathf.CeilToInt(particleCount / 64.0f), 1, 1);
+        cmd.EndSample("Update Positions");
+        Graphics.ExecuteCommandBuffer(cmd);
+        cmd.Release();
+
+
+        /*Dispatch(compute, particleCount, kernelIndex: externalForcesKernel);
+>>>>>>> Stashed changes
         Dispatch(compute, particleCount, kernelIndex: predictPositionsKernel);
 
         for (int sortingGroupSize = 2; sortingGroupSize <= particleCount; sortingGroupSize *= 2)
@@ -172,7 +224,7 @@ public class SimulationSpatialHashingManager : MonoBehaviour
         Dispatch(compute, particleCount, kernelIndex: densityKernel);
         Dispatch(compute, particleCount, kernelIndex: pressureKernel);
         Dispatch(compute, particleCount, kernelIndex: viscosityKernel);
-        Dispatch(compute, particleCount, kernelIndex: updatePositionKernel);
+        Dispatch(compute, particleCount, kernelIndex: updatePositionKernel);*/
     }
 
     void UpdateTimeStep(float timeStep)

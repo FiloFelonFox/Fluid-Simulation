@@ -252,11 +252,11 @@ void SortParticlesByHash(uint3 id : SV_DispatchThreadID)
 		ParticleHashTable[id.x] = ParticleHashTable[partnerId];
         ParticleHashTable[partnerId] = tempUint;
 		//i dont think densisties need to be swapped
-        //float2 tempFloat2 = Densities[id.x];
-		//Densities[id.x] = Densities[partnerId];
-		//Densities[partnerId] = tempFloat2;
+        float2 tempFloat2 = Densities[id.x];
+		Densities[id.x] = Densities[partnerId];
+		Densities[partnerId] = tempFloat2;
 		
-        float2 tempFloat2 = Positions[id.x];
+        tempFloat2 = Positions[id.x];
         Positions[id.x] = Positions[partnerId];
 		Positions[partnerId] = tempFloat2;
 		
@@ -383,7 +383,7 @@ void CalculatePressureForce(uint3 id : SV_DispatchThreadID)
 
             float sharedPressure = (pressure + secondParticlePressure) * 0.5;
             float sharedNearPressure = (nearPressure + secondParticleNearPressure) * 0.5;
-
+			
             pressureForce += interractionDirection * DensityDerivative(distanceToSecondParticle, smoothingRadius) * sharedPressure / Densities[startIndex][0];
             pressureForce += interractionDirection * NearDensityDerivative(distanceToSecondParticle, smoothingRadius) * sharedNearPressure / Densities[startIndex][1];
         }
