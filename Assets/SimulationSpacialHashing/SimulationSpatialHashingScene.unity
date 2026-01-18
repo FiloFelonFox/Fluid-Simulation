@@ -210,7 +210,7 @@ Transform:
   m_GameObject: {fileID: 295449537}
   serializedVersion: 2
   m_LocalRotation: {x: 0.40821788, y: -0.23456968, z: 0.10938163, w: 0.8754261}
-  m_LocalPosition: {x: 0, y: 3, z: 0}
+  m_LocalPosition: {x: 25.76, y: 3, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -314,7 +314,6 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 1259511734}
-  - component: {fileID: 1259511735}
   - component: {fileID: 1259511737}
   m_Layer: 0
   m_Name: goodSimulation
@@ -338,57 +337,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!20 &1259511735
-Camera:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1259511730}
-  m_Enabled: 1
-  serializedVersion: 2
-  m_ClearFlags: 2
-  m_BackGroundColor: {r: 0, g: 0, b: 0, a: 0}
-  m_projectionMatrixMode: 1
-  m_GateFitMode: 2
-  m_FOVAxisMode: 0
-  m_Iso: 200
-  m_ShutterSpeed: 0.005
-  m_Aperture: 16
-  m_FocusDistance: 10
-  m_FocalLength: 50
-  m_BladeCount: 5
-  m_Curvature: {x: 2, y: 11}
-  m_BarrelClipping: 0.25
-  m_Anamorphism: 0
-  m_SensorSize: {x: 36, y: 24}
-  m_LensShift: {x: 0, y: 0}
-  m_NormalizedViewPortRect:
-    serializedVersion: 2
-    x: 0
-    y: 0
-    width: 0.99
-    height: 0.99
-  near clip plane: 0
-  far clip plane: 1000
-  field of view: 60
-  orthographic: 1
-  orthographic size: 18
-  m_Depth: 0
-  m_CullingMask:
-    serializedVersion: 2
-    m_Bits: 4294967295
-  m_RenderingPath: -1
-  m_TargetTexture: {fileID: 0}
-  m_TargetDisplay: 0
-  m_TargetEye: 3
-  m_HDR: 1
-  m_AllowMSAA: 1
-  m_AllowDynamicResolution: 0
-  m_ForceIntoRT: 0
-  m_OcclusionCulling: 1
-  m_StereoConvergence: 10
-  m_StereoSeparation: 0.022
 --- !u!114 &1259511737
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -404,15 +352,15 @@ MonoBehaviour:
   timeScale: 0.001
   iterationsPerFrame: 1
   gravity: -2
-  smoothingRadius: 1
-  targetDensity: 160
-  pressureMultiplier: 500
-  nearPressureMultiplier: 30
+  smoothingRadius: 0.415
+  targetDensity: 15
+  pressureMultiplier: 800
+  nearPressureMultiplier: 200
   viscosityMultiplier: 0.06
   boundsSize: {x: 16, y: 9}
-  collisionDamping: 0.95
+  collisionDamping: 0.85
   compute: {fileID: 7200000, guid: 8a3c31367cc5dce4a8ccf3f3017251cd, type: 3}
-  hashTableSize: 15625
+  hashTableSize: 1053
   particleCount: 8192
   initialVelocity: {x: 0, y: 0}
   spawnCentre: {x: 0, y: 0}

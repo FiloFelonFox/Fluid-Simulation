@@ -1,9 +1,13 @@
 #pragma kernel CalculateExternalForces
+#pragma kernel PredictPositions
+#pragma kernel SortParticlesByHash
+#pragma kernel BuildHashOffsetTable
 #pragma kernel CalculateDensities
 #pragma kernel CalculatePressureForce
 #pragma kernel CalculateViscosity
 #pragma kernel UpdatePositions
 
+static const uint MAX_UINT = 4294967295;
 static const int NumThreads = 64;
 
 // Kernel Constants (set from C# via compute.SetFloat)
@@ -19,6 +23,10 @@ RWStructuredBuffer<float2> PredictedPositions;
 RWStructuredBuffer<float2> Velocities;
 RWStructuredBuffer<float2> Densities;
 
+RWStructuredBuffer<uint> ParticleHashTable;
+RWStructuredBuffer<uint> HashOffsetTable;
+
+
 // Simulation Settings (set from C#)
 uint numParticles;
 float gravity;
@@ -30,6 +38,8 @@ float pressureMultiplier;
 float nearPressureMultiplier;
 float viscosityStrength;
 float2 boundsSize;
+uint hashTableSize;
+
 
 // Kernel Functions
 float Poly6Kernel(float distance, float radius)
@@ -43,7 +53,7 @@ float Poly6Kernel(float distance, float radius)
 float Pow3Kernel(float distance, float radius)
 {
 	if (distance >= radius)
-        return 0;
+		return 0;
 	float v = radius - distance;
 	return v * v * v * SpikyPow3ScalingFactor;
 }
@@ -51,7 +61,7 @@ float Pow3Kernel(float distance, float radius)
 float Pow2Kernel(float distance, float radius)
 {
 	if (distance >= radius)
-        return 0;
+		return 0;
 	float v = radius - distance;
 	return v * v * SpikyPow2ScalingFactor;
 }
@@ -59,7 +69,7 @@ float Pow2Kernel(float distance, float radius)
 float Pow3KernelGradient(float distance, float radius)
 {
 	if (distance > radius)
-        return 0;
+		return 0;
 	float v = radius - distance;
 	return -v * v * SpikyPow3DerivativeScalingFactor;
 }
@@ -67,7 +77,7 @@ float Pow3KernelGradient(float distance, float radius)
 float Pow2KernelGradient(float distance, float radius)
 {
 	if (distance > radius)
-        return 0;
+		return 0;
 	float v = radius - distance;
 	return -v * SpikyPow2DerivativeScalingFactor;
 }
@@ -164,6 +174,48 @@ void HandleCollisions(uint particleIndex)
 	Velocities[particleIndex] = vel;
 }
 
+int GetHash(float2 position)
+{
+    position = position + boundsSize * 0.5;
+    return (ceil(position.x / smoothingRadius) + ceil(position.y / smoothingRadius) * ceil(boundsSize.y / smoothingRadius)) % hashTableSize;
+}
+
+void GetNeighbouringCellHashes(float2 position, out uint results[9])
+{
+	float offsets[] = {
+		-1, -1,
+		-1, 0,
+		-1, 1,
+		 0, -1,
+		 0, 0,
+		 0, 1,
+		 1, -1,
+		 1, 0,
+		 1, 1
+	};
+	
+	uint idx = 0;
+    for (int i = 0; i < 9; i++)
+    {	
+        results[idx] = MAX_UINT;
+        uint hash = GetHash(position + float2(offsets[i * 2], offsets[i * 2 + 1]) * smoothingRadius);
+        bool found = false;
+        for (int j = 0; j < i; j++)
+        {
+			if (results[j] == hash)
+			{
+				found = true;
+				break;
+            }
+        }
+        if (!found)
+        {
+            results[idx] = hash;
+            idx++;
+        }
+    }
+}
+
 //GPU Kernels
 [numthreads(NumThreads, 1, 1)]
 void CalculateExternalForces(uint3 id : SV_DispatchThreadID)
@@ -172,10 +224,64 @@ void CalculateExternalForces(uint3 id : SV_DispatchThreadID)
 		return;
 
 	Velocities[id.x] += ExternalForces(Positions[id.x], Velocities[id.x]) * timeStep;
+}
+
+[numthreads(NumThreads, 1, 1)]
+void PredictPositions(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= numParticles)
+		return;
+
+	const float predictionStep = 1 / 120.0;
+	PredictedPositions[id.x] = Positions[id.x] + Velocities[id.x] * predictionStep;
 	
-	//Predict Positions
-    const float predictionStep = 1 / 120.0;
-    PredictedPositions[id.x] = Positions[id.x] + Velocities[id.x] * predictionStep;
+	int2 cellIndex = int2(floor(PredictedPositions[id.x] / smoothingRadius));
+    ParticleHashTable[id.x] = GetHash(PredictedPositions[id.x]);
+	
+}
+
+uint sortingDistance;
+uint sortingGroupSize;
+[numthreads(NumThreads, 1, 1)]
+void SortParticlesByHash(uint3 id : SV_DispatchThreadID)
+{
+	uint partnerId = id.x ^ sortingDistance;
+	bool ascending = ((id.x & sortingGroupSize) == 0);
+	bool doSwap = (ascending && (ParticleHashTable[id.x] > ParticleHashTable[partnerId])) || (!ascending && (ParticleHashTable[id.x]  < ParticleHashTable[partnerId]));
+	if (doSwap && partnerId > id.x && partnerId < numParticles)
+	{
+		uint tempUint = ParticleHashTable[id.x];
+		ParticleHashTable[id.x] = ParticleHashTable[partnerId];
+		ParticleHashTable[partnerId] = tempUint;
+		
+		float2 tempFloat2 = Positions[id.x];
+		Positions[id.x] = Positions[partnerId];
+		Positions[partnerId] = tempFloat2;
+		
+		tempFloat2 = PredictedPositions[id.x];
+		PredictedPositions[id.x] = PredictedPositions[partnerId];
+		PredictedPositions[partnerId] = tempFloat2;
+		
+		tempFloat2 = Velocities[id.x];
+		Velocities[id.x] = Velocities[partnerId];
+		Velocities[partnerId] = tempFloat2;
+	}
+}
+
+[numthreads(NumThreads,1,1)]
+void BuildHashOffsetTable(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= hashTableSize)
+		return;
+	for(uint i = 0; i < numParticles; i++)
+	{
+		if (ParticleHashTable[i] == id.x)
+		{
+			HashOffsetTable[id.x] = i;
+			return;
+		}
+	}
+	HashOffsetTable[id.x] = numParticles;
 }
 
 [numthreads(NumThreads, 1, 1)]
@@ -185,7 +291,35 @@ void CalculateDensities(uint3 id : SV_DispatchThreadID)
 		return;
 
 	float2 position = PredictedPositions[id.x];
-	Densities[id.x] = CalculateDensity(position);
+	float sqrSmoothingRadius = smoothingRadius * smoothingRadius;
+	float density = 0.1;
+	float nearDensity = 0.1;
+	
+	uint neighborHashes[9];
+	GetNeighbouringCellHashes(position, neighborHashes);
+	
+	for (int i = 0; i < 9; i++)
+	{
+		uint currentHash = neighborHashes[i];
+		if (currentHash == MAX_UINT)
+			break;
+		for (uint startIndex = HashOffsetTable[currentHash]; startIndex < numParticles && ParticleHashTable[startIndex] == currentHash; startIndex++)
+		{
+			if (startIndex == id.x)
+				continue;
+			float2 secondParticlePosition = PredictedPositions[startIndex];
+			float2 vectorToSecondParticle = secondParticlePosition - position;
+			float sqrDstToSecondParticle = dot(vectorToSecondParticle, vectorToSecondParticle);
+
+			if (sqrDstToSecondParticle > sqrSmoothingRadius)
+				continue;
+
+			float dst = sqrt(sqrDstToSecondParticle);
+			density += DensityKernel(dst, smoothingRadius);
+			nearDensity += NearDensityKernel(dst, smoothingRadius);
+		}
+	}
+	Densities[id.x] =  float2(density, nearDensity);
 }
 
 [numthreads(NumThreads, 1, 1)]
@@ -202,13 +336,21 @@ void CalculatePressureForce(uint3 id : SV_DispatchThreadID)
 	
 	float2 position = PredictedPositions[id.x];
 	float sqrSmoothingRadius = smoothingRadius * smoothingRadius;
-
-	for (uint secondParticleIndex = 0; secondParticleIndex < numParticles; secondParticleIndex++)
+	
+	uint neighborHashes[9];
+	GetNeighbouringCellHashes(position, neighborHashes);
+	
+	for (int i = 0; i < 9; i++)
 	{
-			if (secondParticleIndex == id.x)
+		uint currentHash = neighborHashes[i];
+		if (currentHash == MAX_UINT)
+			break;
+		for (uint startIndex = HashOffsetTable[currentHash]; startIndex < numParticles && ParticleHashTable[startIndex] == currentHash; startIndex++)
+		{
+			if (startIndex == id.x)
 				continue;
 
-			float2 secondParticlePosition = PredictedPositions[secondParticleIndex];
+			float2 secondParticlePosition = PredictedPositions[startIndex];
 			float2 vectorToSecondParticle = secondParticlePosition - position;
 			float sqrDstToSecondParticle = dot(vectorToSecondParticle, vectorToSecondParticle);
 
@@ -218,14 +360,15 @@ void CalculatePressureForce(uint3 id : SV_DispatchThreadID)
 			float distanceToSecondParticle = sqrt(sqrDstToSecondParticle);
 			float2 interractionDirection = distanceToSecondParticle > 0 ? vectorToSecondParticle / distanceToSecondParticle : float2(0, 1);
 
-			float secondParticlePressure = PressureFromDensity(Densities[secondParticleIndex][0]);
-			float secondParticleNearPressure = NearPressureFromDensity(Densities[secondParticleIndex][1]);
+			float secondParticlePressure = PressureFromDensity(Densities[startIndex][0]);
+			float secondParticleNearPressure = NearPressureFromDensity(Densities[startIndex][1]);
 
 			float sharedPressure = (pressure + secondParticlePressure) * 0.5;
 			float sharedNearPressure = (nearPressure + secondParticleNearPressure) * 0.5;
-
-			pressureForce += interractionDirection * DensityDerivative(distanceToSecondParticle, smoothingRadius) * sharedPressure / Densities[secondParticleIndex][0];
-			pressureForce += interractionDirection * NearDensityDerivative(distanceToSecondParticle, smoothingRadius) * sharedNearPressure / Densities[secondParticleIndex][1];
+			
+			pressureForce += interractionDirection * DensityDerivative(distanceToSecondParticle, smoothingRadius) * sharedPressure / Densities[startIndex][0];
+			pressureForce += interractionDirection * NearDensityDerivative(distanceToSecondParticle, smoothingRadius) * sharedNearPressure / Densities[startIndex][1];
+		}
 	}
 	float2 acceleration = pressureForce / density;
 	Velocities[id.x] += acceleration * timeStep;
@@ -242,13 +385,21 @@ void CalculateViscosity(uint3 id : SV_DispatchThreadID)
 
 	float2 viscosityForce = 0;
 	float2 velocity = Velocities[id.x];
-
-	for (uint secondParticleIndex = 0; secondParticleIndex < numParticles; secondParticleIndex++)
+	
+	uint neighborHashes[9];
+	GetNeighbouringCellHashes(position, neighborHashes);
+	
+	for (int i = 0; i < 9; i++)
 	{
-			if (secondParticleIndex == id.x)
+		uint currentHash = neighborHashes[i];
+		if (currentHash == MAX_UINT)
+			break;
+		for (uint startIndex = HashOffsetTable[currentHash]; startIndex < numParticles && ParticleHashTable[startIndex] == currentHash; startIndex++)
+		{
+			if (startIndex == id.x)
 				continue;
-
-			float2 secondParticlePosition = PredictedPositions[secondParticleIndex];
+			
+			float2 secondParticlePosition = PredictedPositions[startIndex];
 			float2 vectorToSecondParticle = secondParticlePosition - position;
 			float sqrDstToSecondParticle = dot(vectorToSecondParticle, vectorToSecondParticle);
 
@@ -256,8 +407,9 @@ void CalculateViscosity(uint3 id : SV_DispatchThreadID)
 				continue;
 
 			float distanceToSecondParticle = sqrt(sqrDstToSecondParticle);
-			float2 secondParticleVelocity = Velocities[secondParticleIndex];
+			float2 secondParticleVelocity = Velocities[startIndex];
 			viscosityForce += (secondParticleVelocity - velocity) * ViscosityKernel(distanceToSecondParticle, smoothingRadius);
+		}
 	}
 	Velocities[id.x] += viscosityForce * viscosityStrength * timeStep;
 }

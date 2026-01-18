@@ -156,11 +156,11 @@ public class SimpleSimulation : MonoBehaviour
         compute.SetFloat("viscosityStrength", viscosityMultiplier);
         compute.SetVector("boundsSize", boundsSize);
 
-        compute.SetFloat("Poly6ScalingFactor", 4 / (Mathf.PI * Mathf.Pow(smoothingRadius, 8)));
-        compute.SetFloat("SpikyPow3ScalingFactor", 10 / (Mathf.PI * Mathf.Pow(smoothingRadius, 5)));
-        compute.SetFloat("SpikyPow2ScalingFactor", 6 / (Mathf.PI * Mathf.Pow(smoothingRadius, 4)));
-        compute.SetFloat("SpikyPow3DerivativeScalingFactor", 30 / (Mathf.Pow(smoothingRadius, 5) * Mathf.PI));
-        compute.SetFloat("SpikyPow2DerivativeScalingFactor", 12 / (Mathf.Pow(smoothingRadius, 4) * Mathf.PI));
+        compute.SetFloat("Poly6ScalingFactor", 35 / (16 * Mathf.PI * Mathf.Pow(smoothingRadius, 8)));
+        compute.SetFloat("SpikyPow3ScalingFactor", 4 / (Mathf.PI * Mathf.Pow(smoothingRadius, 5)));
+        compute.SetFloat("SpikyPow2ScalingFactor", 3 / (Mathf.PI * Mathf.Pow(smoothingRadius, 4)));
+        compute.SetFloat("SpikyPow3DerivativeScalingFactor", 3 / (Mathf.PI * Mathf.Pow(smoothingRadius, 3)));
+        compute.SetFloat("SpikyPow2DerivativeScalingFactor", 2 / (Mathf.PI * Mathf.Pow(smoothingRadius, 3)));
     }
 
     void SetInitialBufferData()

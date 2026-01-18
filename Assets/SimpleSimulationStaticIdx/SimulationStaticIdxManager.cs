@@ -1,8 +1,11 @@
-using UnityEngine;
-using Unity.Mathematics;
+using System;
+using System.Collections;
 using System.Runtime.InteropServices;
+using Unity.Mathematics;
+using UnityEngine;
+using UnityEngine.Rendering;
 
-public class SimpleSimulationOptimised : MonoBehaviour
+public class SimulationStaticIdxManager : MonoBehaviour
 {
     [Header("Time")]
     public float timeScale = 1;
@@ -22,6 +25,7 @@ public class SimpleSimulationOptimised : MonoBehaviour
 
     [Header("References")]
     public ComputeShader compute;
+    private int hashTableSize;
 
     [Header("Spawn")]
     public int particleCount;
@@ -35,17 +39,25 @@ public class SimpleSimulationOptimised : MonoBehaviour
     public ComputeBuffer densityBuffer { get; private set; }
     ComputeBuffer predictedPositionBuffer;
 
+    ComputeBuffer particleHashTableBuffer;
+    ComputeBuffer hashOffsetTableBuffer;
+
     const int externalForcesKernel = 0;
-    const int densityKernel = 1;
-    const int pressureKernel = 2;
-    const int viscosityKernel = 3;
-    const int updatePositionKernel = 4;
+    const int predictPositionsKernel = 1;
+    const int sortParticlesByHashKernel = 2;
+    const int buildHashOffsetTableKernel = 3;
+    const int densityKernel = 4;
+    const int pressureKernel = 5;
+    const int viscosityKernel = 6;
+    const int updatePositionKernel = 7;
 
     private bool isPaused;
     private float2[] particleSpawnPositions;
     private float2[] particleSpawnVelocities;
 
     private float2[] particleCurrentPositions;
+    private int[] particleHashes;
+    private float[] particleParam;
 
     void Start()
     {
@@ -53,10 +65,14 @@ public class SimpleSimulationOptimised : MonoBehaviour
 
         SetSpawnParameters();
 
+        hashTableSize = Mathf.CeilToInt(boundsSize.x / smoothingRadius) * Mathf.CeilToInt(boundsSize.y / smoothingRadius);
+
         positionBuffer = new ComputeBuffer(particleCount, Marshal.SizeOf(typeof(float2)));
         predictedPositionBuffer = new ComputeBuffer(particleCount, Marshal.SizeOf(typeof(float2)));
         velocityBuffer = new ComputeBuffer(particleCount, Marshal.SizeOf(typeof(float2)));
         densityBuffer = new ComputeBuffer(particleCount, Marshal.SizeOf(typeof(float2)));
+        particleHashTableBuffer = new ComputeBuffer(particleCount, Marshal.SizeOf(typeof(uint)));
+        hashOffsetTableBuffer = new ComputeBuffer(hashTableSize, Marshal.SizeOf(typeof(uint)));
 
         SetInitialBufferData();
 
@@ -70,17 +86,37 @@ public class SimpleSimulationOptimised : MonoBehaviour
         compute.SetBuffer(externalForcesKernel, "Positions", positionBuffer);
         compute.SetBuffer(externalForcesKernel, "PredictedPositions", predictedPositionBuffer);
         compute.SetBuffer(externalForcesKernel, "Velocities", velocityBuffer);
-        
+
+        compute.SetBuffer(predictPositionsKernel, "Positions", positionBuffer);
+        compute.SetBuffer(predictPositionsKernel, "PredictedPositions", predictedPositionBuffer);
+        compute.SetBuffer(predictPositionsKernel, "Velocities", velocityBuffer);
+        compute.SetBuffer(predictPositionsKernel, "ParticleHashTable", particleHashTableBuffer);
+
+        compute.SetBuffer(sortParticlesByHashKernel, "Densities", densityBuffer);
+        compute.SetBuffer(sortParticlesByHashKernel, "Positions", positionBuffer);
+        compute.SetBuffer(sortParticlesByHashKernel, "PredictedPositions", predictedPositionBuffer);
+        compute.SetBuffer(sortParticlesByHashKernel, "Velocities", velocityBuffer);
+        compute.SetBuffer(sortParticlesByHashKernel, "ParticleHashTable", particleHashTableBuffer);
+
+        compute.SetBuffer(buildHashOffsetTableKernel, "ParticleHashTable", particleHashTableBuffer);
+        compute.SetBuffer(buildHashOffsetTableKernel, "HashOffsetTable", hashOffsetTableBuffer);
+
         compute.SetBuffer(densityKernel, "Densities", densityBuffer);
         compute.SetBuffer(densityKernel, "PredictedPositions", predictedPositionBuffer);
-        
+        compute.SetBuffer(densityKernel, "ParticleHashTable", particleHashTableBuffer);
+        compute.SetBuffer(densityKernel, "HashOffsetTable", hashOffsetTableBuffer);
+
         compute.SetBuffer(pressureKernel, "Densities", densityBuffer);
         compute.SetBuffer(pressureKernel, "PredictedPositions", predictedPositionBuffer);
         compute.SetBuffer(pressureKernel, "Velocities", velocityBuffer);
-        
+        compute.SetBuffer(pressureKernel, "ParticleHashTable", particleHashTableBuffer);
+        compute.SetBuffer(pressureKernel, "HashOffsetTable", hashOffsetTableBuffer);
+
         compute.SetBuffer(viscosityKernel, "Densities", densityBuffer);
         compute.SetBuffer(viscosityKernel, "PredictedPositions", predictedPositionBuffer);
         compute.SetBuffer(viscosityKernel, "Velocities", velocityBuffer);
+        compute.SetBuffer(viscosityKernel, "ParticleHashTable", particleHashTableBuffer);
+        compute.SetBuffer(viscosityKernel, "HashOffsetTable", hashOffsetTableBuffer);
 
         compute.SetBuffer(updatePositionKernel, "Positions", positionBuffer);
         compute.SetBuffer(updatePositionKernel, "Velocities", velocityBuffer);
@@ -91,6 +127,8 @@ public class SimpleSimulationOptimised : MonoBehaviour
         particleSpawnPositions = new float2[particleCount];
         particleSpawnVelocities = new float2[particleCount];
         particleCurrentPositions = new float2[particleCount];
+        particleHashes = new int[particleCount];
+        particleParam = new float[particleCount];
         for (int i = 0; i < particleCount; i++)
         {
             float2 pos = new float2(
@@ -113,7 +151,7 @@ public class SimpleSimulationOptimised : MonoBehaviour
     {
         if (!isPaused)
         {
-            float timeStep = frameTime / iterationsPerFrame * timeScale;
+            float timeStep = timeScale;
 
             UpdateSettings(timeStep);
 
@@ -126,11 +164,62 @@ public class SimpleSimulationOptimised : MonoBehaviour
 
     void RunSimulationStep()
     {
+        CommandBuffer cmd = new CommandBuffer();
+        cmd.name = "HashSimulation";
+        cmd.BeginSample("External Forces");
+        cmd.DispatchCompute(compute, externalForcesKernel, Mathf.CeilToInt(particleCount / 64.0f), 1, 1);
+        cmd.EndSample("External Forces");
+        cmd.BeginSample("Predict Positions");
+        cmd.DispatchCompute(compute, predictPositionsKernel, Mathf.CeilToInt(particleCount / 64.0f), 1, 1);
+        cmd.EndSample("Predict Positions");
+        cmd.BeginSample("Sort Particles By Hash");
+        for (int sortingGroupSize = 2; sortingGroupSize <= particleCount; sortingGroupSize *= 2)
+        {
+            for (int sortingDistance = sortingGroupSize / 2; sortingDistance > 0; sortingDistance /= 2)
+            {
+                cmd.SetComputeIntParam( compute, "sortingGroupSize", sortingGroupSize);
+                cmd.SetComputeIntParam( compute, "sortingDistance", sortingDistance);
+                cmd.DispatchCompute(compute, sortParticlesByHashKernel, Mathf.CeilToInt(particleCount / 64.0f), 1, 1);
+            }
+        }
+        cmd.EndSample("Sort Particles By Hash");
+        cmd.BeginSample("Build Hash Offset Table");
+        cmd.DispatchCompute(compute, buildHashOffsetTableKernel, Mathf.CeilToInt(hashTableSize / 64.0f), 1, 1);
+        cmd.EndSample("Build Hash Offset Table");
+        cmd.BeginSample("Density");
+        cmd.DispatchCompute(compute, densityKernel, Mathf.CeilToInt(particleCount / 64.0f), 1, 1);
+        cmd.EndSample("Density");
+        cmd.BeginSample("Pressure");
+        cmd.DispatchCompute(compute, pressureKernel, Mathf.CeilToInt(particleCount / 64.0f), 1, 1);
+        cmd.EndSample("Pressure");
+        cmd.BeginSample("Viscosity");
+        cmd.DispatchCompute(compute, viscosityKernel, Mathf.CeilToInt(particleCount / 64.0f), 1, 1);
+        cmd.EndSample("Viscosity");
+        cmd.BeginSample("Update Positions");
+        cmd.DispatchCompute(compute, updatePositionKernel, Mathf.CeilToInt(particleCount / 64.0f), 1, 1);
+        cmd.EndSample("Update Positions");
+        Graphics.ExecuteCommandBuffer(cmd);
+        cmd.Release();
+
+
+        /*Dispatch(compute, particleCount, kernelIndex: predictPositionsKernel);
         Dispatch(compute, particleCount, kernelIndex: externalForcesKernel);
+
+        for (int sortingGroupSize = 2; sortingGroupSize <= particleCount; sortingGroupSize *= 2)
+        {
+            for (int sortingDistance = sortingGroupSize / 2; sortingDistance > 0; sortingDistance /= 2)
+            {
+                compute.SetInt("sortingGroupSize", sortingGroupSize);
+                compute.SetInt("sortingDistance", sortingDistance);
+                Dispatch(compute, particleCount, kernelIndex: sortParticlesByHashKernel);
+            }
+        }
+
+        Dispatch(compute, hashTableSize, kernelIndex: buildHashOffsetTableKernel);
         Dispatch(compute, particleCount, kernelIndex: densityKernel);
         Dispatch(compute, particleCount, kernelIndex: pressureKernel);
         Dispatch(compute, particleCount, kernelIndex: viscosityKernel);
-        Dispatch(compute, particleCount, kernelIndex: updatePositionKernel);
+        Dispatch(compute, particleCount, kernelIndex: updatePositionKernel);*/
     }
 
     void UpdateTimeStep(float timeStep)
@@ -140,6 +229,7 @@ public class SimpleSimulationOptimised : MonoBehaviour
 
     void UpdateSettings(float timeStep)
     {
+        hashTableSize = Mathf.CeilToInt(boundsSize.x / smoothingRadius) * Mathf.CeilToInt(boundsSize.y / smoothingRadius);
         compute.SetFloat("timeStep", timeStep);
         compute.SetFloat("gravity", gravity);
         compute.SetFloat("collisionDamping", collisionDamping);
@@ -149,12 +239,13 @@ public class SimpleSimulationOptimised : MonoBehaviour
         compute.SetFloat("nearPressureMultiplier", nearPressureMultiplier);
         compute.SetFloat("viscosityStrength", viscosityMultiplier);
         compute.SetVector("boundsSize", boundsSize);
+        compute.SetInt("hashTableSize", hashTableSize);
 
-        compute.SetFloat("Poly6ScalingFactor", 4 / (Mathf.PI * Mathf.Pow(smoothingRadius, 8)));
-        compute.SetFloat("SpikyPow3ScalingFactor", 10 / (Mathf.PI * Mathf.Pow(smoothingRadius, 5)));
-        compute.SetFloat("SpikyPow2ScalingFactor", 6 / (Mathf.PI * Mathf.Pow(smoothingRadius, 4)));
-        compute.SetFloat("SpikyPow3DerivativeScalingFactor", 30 / (Mathf.Pow(smoothingRadius, 5) * Mathf.PI));
-        compute.SetFloat("SpikyPow2DerivativeScalingFactor", 12 / (Mathf.Pow(smoothingRadius, 4) * Mathf.PI));
+        compute.SetFloat("Poly6ScalingFactor", 35 / (16 * Mathf.PI * Mathf.Pow(smoothingRadius, 8)));
+        compute.SetFloat("SpikyPow3ScalingFactor", 4 / (Mathf.PI * Mathf.Pow(smoothingRadius, 5)));
+        compute.SetFloat("SpikyPow2ScalingFactor", 3 / (Mathf.PI * Mathf.Pow(smoothingRadius, 4)));
+        compute.SetFloat("SpikyPow3DerivativeScalingFactor", 3 / (Mathf.PI * Mathf.Pow(smoothingRadius, 3)));
+        compute.SetFloat("SpikyPow2DerivativeScalingFactor", 2 / (Mathf.PI * Mathf.Pow(smoothingRadius, 3)));
     }
 
     void SetInitialBufferData()
